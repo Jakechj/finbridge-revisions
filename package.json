@@ -1,0 +1,35 @@
+{
+  "name": "finbridge-revisions",
+  "version": "0.1.0",
+  "description": "Append-only, point-in-time revision history for restated records. Keeps originals, preserves first disclosure dates, and answers 'what was known on date T' without look-ahead.",
+  "license": "MIT",
+  "author": "GRONOX Corp.",
+  "private": false,
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/revisions.test.mjs",
+    "example": "node examples/backtest-lookahead.mjs"
+  },
+  "keywords": [
+    "point-in-time",
+    "restatement",
+    "look-ahead-bias",
+    "backtest",
+    "versioning",
+    "financial-statements"
+  ],
+  "dependencies": {},
+  "devDependencies": {}
+}
