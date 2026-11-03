@@ -43,8 +43,36 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** @param {unknown} d @param {string} name */
 function assertDate(d, name) {
-  if (typeof d !== "string" || !DATE_RE.test(d) || Number.isNaN(Date.parse(`${d}T00:00:00Z`))) {
-    throw new TypeError(`${name} must be a "YYYY-MM-DD" string, got ${JSON.stringify(d)}`);
+  if (typeof d !== "string" || !DATE_RE.test(d) || !isCalendarDate(d)) {
+    throw new TypeError(`${name} must be a real "YYYY-MM-DD" date, got ${JSON.stringify(d)}`);
+  }
+}
+
+/** Rejects dates that Date.parse silently rolls over (2026-02-31 -> 2026-03-03). @param {string} d */
+function isCalendarDate(d) {
+  const [y, m, day] = d.split("-").map(Number);
+  if (y < 1000) return false;
+  const t = new Date(Date.UTC(y, m - 1, day));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === day;
+}
+
+/** Stable JSON text of a values object, for comparing re-recorded revisions. @param {unknown} v @returns {string} */
+function canonical(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(/** @type {any} */ (v)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "undefined";
+}
+
+/** Thrown when a (key, revisionId) is recorded again with different values. */
+export class RevisionConflictError extends Error {
+  /** @param {string} key @param {string} revisionId */
+  constructor(key, revisionId) {
+    super(`revision ${JSON.stringify(revisionId)} of ${JSON.stringify(key)} already exists with different values; record a correction under its own revisionId`);
+    this.name = "RevisionConflictError";
+    this.key = key;
+    this.revisionId = revisionId;
   }
 }
 
@@ -105,9 +133,11 @@ export function createRevisionStore(init) {
 
   const store = {
     /**
-     * Add a revision, or update the revision with the same (key, revisionId).
-     * Updating keeps the earlier filedDate if it was earlier, so a late
-     * re-download cannot push an original disclosure forward or backward silently.
+     * Add a revision. Recording an existing (key, revisionId) again is allowed only
+     * with the same values (a re-download); it keeps the earlier of the two
+     * filedDates, so a late re-download cannot push a disclosure date later.
+     * Different values throw RevisionConflictError: a stored revision is never
+     * overwritten, because that would change what past asOf() reads return.
      * @param {RevisionInput} input
      * @returns {Revision}
      */
@@ -117,11 +147,13 @@ export function createRevisionStore(init) {
       if (typeof key !== "string" || key === "") throw new TypeError("key must be a non-empty string");
       if (typeof revisionId !== "string" || revisionId === "") throw new TypeError("revisionId must be a non-empty string");
       assertDate(filedDate, "filedDate");
-      if (!values || typeof values !== "object" || Array.isArray(values)) throw new TypeError("values must be a plain object");
+      const proto = values && typeof values === "object" ? Object.getPrototypeOf(values) : undefined;
+      if (!values || (proto !== Object.prototype && proto !== null)) throw new TypeError("values must be a plain object");
 
       let m = byKey.get(key);
       if (!m) byKey.set(key, (m = new Map()));
       const prev = m.get(revisionId);
+      if (prev && canonical(prev.values) !== canonical(values)) throw new RevisionConflictError(key, revisionId);
       /** @type {Revision} */
       const rev = Object.freeze({
         key,

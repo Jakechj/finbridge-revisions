@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRevisionStore, pickAsOf, diffValues } from "../src/index.js";
+import { RevisionConflictError, createRevisionStore, pickAsOf, diffValues } from "../src/index.js";
 
 const K = "ACME:2025:FY:consolidated";
 
@@ -42,6 +42,18 @@ test("re-recording the same revision id is idempotent and keeps the earlier file
   s.record({ key: K, revisionId: "r-001", filedDate: "2026-04-20", values: { revenue: 100, net_income: 10 } });
   assert.equal(s.history(K).length, 2);
   assert.equal(s.history(K)[0].filedDate, "2026-03-10");
+});
+
+test("re-recording a revision id with different values is refused and leaves past reads unchanged", () => {
+  const s = createRevisionStore();
+  s.record({ key: K, revisionId: "r1", filedDate: "2026-03-10", values: { v: 10 } });
+  assert.throws(() => s.record({ key: K, revisionId: "r1", filedDate: "2026-06-01", values: { v: 999 } }), RevisionConflictError);
+  assert.equal(s.asOf(K, "2026-04-01").values.v, 10);
+  assert.equal(s.history(K).length, 1);
+  // same values in a different key order is the same revision
+  s.record({ key: K, revisionId: "r2", filedDate: "2026-05-01", values: { a: 1, b: { c: 2 } } });
+  assert.doesNotThrow(() => s.record({ key: K, revisionId: "r2", filedDate: "2026-05-02", values: { b: { c: 2 }, a: 1 } }));
+  assert.equal(s.history(K).at(-1).filedDate, "2026-05-01");
 });
 
 test("same-day revisions resolve by insertion order", () => {
@@ -107,6 +119,11 @@ test("input validation", () => {
   assert.throws(() => s.record({ key: K, revisionId: "", filedDate: "2026-01-01", values: {} }), TypeError);
   assert.throws(() => s.record({ key: K, revisionId: "a", filedDate: "2026/01/01", values: {} }), TypeError);
   assert.throws(() => s.record({ key: K, revisionId: "a", filedDate: "2026-13-45", values: {} }), TypeError);
+  for (const bad of ["2026-02-31", "2026-04-31", "2025-02-29", "0000-01-01"]) {
+    assert.throws(() => s.record({ key: K, revisionId: "a", filedDate: bad, values: {} }), TypeError, bad);
+  }
+  assert.doesNotThrow(() => s.record({ key: K, revisionId: "leap", filedDate: "2024-02-29", values: {} }));
+  assert.throws(() => s.record({ key: K, revisionId: "a", filedDate: "2026-01-01", values: new Map() }), TypeError);
   assert.throws(() => s.record({ key: K, revisionId: "a", filedDate: null, values: {} }), TypeError);
   assert.throws(() => s.record({ key: K, revisionId: "a", filedDate: "2026-01-01", values: [] }), TypeError);
   assert.throws(() => s.asOf(K, "yesterday"), TypeError);

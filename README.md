@@ -22,11 +22,13 @@ any database.
 
 ## Install
 
+Not on npm yet. Install from GitHub:
+
 ```sh
-npm install finbridge-revisions
+npm install github:Jakechj/finbridge-revisions
 ```
 
-Node 18 or later. ESM only.
+Node 18 or later. ESM only. No dependencies.
 
 ## Minimal example
 
@@ -57,7 +59,7 @@ Returns a store. `init` is the output of `store.toJSON()`.
 
 | Method | Returns |
 | --- | --- |
-| `record({ key, revisionId, filedDate, values })` | The stored revision. A new `revisionId` adds a revision; an existing one updates it in place. |
+| `record({ key, revisionId, filedDate, values })` | The stored revision. A new `revisionId` adds a revision. Recording an existing one again is accepted only with identical values; different values throw `RevisionConflictError`. |
 | `latest(key)` | Most recently filed revision, or `null`. |
 | `asOf(key, date)` | Last revision with `filedDate <= date`, or `null`. |
 | `firstDisclosed(key)` | Earliest `filedDate` for the key, or `null`. |
@@ -75,13 +77,18 @@ Fields:
 - `revisionId`: id of the document that produced the values (filing or
   receipt number). Amendments have their own id, so originals and amendments
   separate naturally.
-- `filedDate`: `"YYYY-MM-DD"`, the date the document became public. Required.
-- `values`: a plain object. It is shallow-copied and frozen.
+- `filedDate`: `"YYYY-MM-DD"`, the date the document became public. Required,
+  and must be a real calendar date (`2026-02-31` is rejected).
+- `values`: a plain object of JSON-compatible values. It is shallow-copied and
+  the top level is frozen. Nested objects are not frozen, so treat them as
+  read-only; `toJSON()` turns `NaN`, `Infinity` and `Date` into what
+  `JSON.stringify` makes of them.
 
 ### `pickAsOf(revisions, date)`
 
 Pure function over an array of `{ filedDate, ... }` objects. Use it when the
-revisions already live in your own table.
+revisions already live in your own table. Rows are not validated; on equal
+dates the later array element wins, so pass rows in insertion order.
 
 ### `diffValues(before, after)`
 
@@ -91,16 +98,20 @@ Shallow field diff using `Object.is`, sorted by field name.
 
 - **Never overwrite across revisions.** The primary key of a revision is
   `(key, revisionId)`. A correction is a new row, not an update.
-- **Re-ingest is idempotent.** Recording the same `(key, revisionId)` again
-  replaces its values but keeps the earlier of the two `filedDate`s, so a late
-  re-download does not move a disclosure date.
+- **Re-ingest is safe.** Recording the same `(key, revisionId)` again with the
+  same values keeps the earlier of the two `filedDate`s, so a late re-download
+  does not move a disclosure date later. Different values are refused
+  (`RevisionConflictError`): changing a stored revision would change what a
+  past `asOf()` returned. Record a correction under its own `revisionId`.
 - **First disclosure date is derived, not stored.** It is the minimum
   `filedDate` across revisions, so no code path can push it forward when an
   amendment arrives.
 - **`filedDate` is mandatory.** A revision without a known publication date
   cannot be placed in time safely, so it is rejected rather than guessed.
-- **Ties.** Revisions filed on the same date are ordered by insertion order.
-  `pickAsOf` picks the later array element on ties.
+- **Ties.** Revisions filed on the same date are ordered by insertion order
+  (`seq` on each returned revision). If an amendment and its original arrive
+  on the same day but the amendment is recorded first, the original will be
+  treated as current. Record same-day documents in filing order.
 - **Dates are strings.** `"YYYY-MM-DD"` compares correctly as text and avoids
   time zone conversion. If you need intraday precision, use a sortable
   timestamp string in your own `pickAsOf`-style query.
@@ -114,14 +125,21 @@ CREATE TABLE revisions (
   key         TEXT NOT NULL,
   revision_id TEXT NOT NULL,
   filed_date  TEXT NOT NULL,
+  seq         INTEGER NOT NULL,  -- insertion order, breaks same-day ties
   -- value columns ...
   PRIMARY KEY (key, revision_id)
 );
 
+-- Re-ingest: never change values; only allow an earlier filed_date
+INSERT INTO revisions (key, revision_id, filed_date, seq /*, values */)
+VALUES (?, ?, ?, ? /*, ... */)
+ON CONFLICT (key, revision_id) DO UPDATE
+  SET filed_date = MIN(revisions.filed_date, excluded.filed_date);
+
 -- Point-in-time read
 SELECT * FROM revisions
 WHERE key = ? AND filed_date <= ?
-ORDER BY filed_date DESC
+ORDER BY filed_date DESC, seq DESC
 LIMIT 1;
 ```
 
